@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The status widget now renders only when a transport is actually connected.
 
 ### Removed
+- Removed the `adminUserId` concept and its "🔐 … is now the admin" notice. It
+  was write-only state (set, persisted, loaded, but never read — admin DM
+  commands gate on trusted users), and the notice fired on the first message of
+  every fresh session, colliding with that message's render in the pi TUI.
 - Dropped the unused `debug` option — the `config.debug` field and the
   `MSG_BRIDGE_DEBUG`/`PI_MATRIX_BRIDGE_DEBUG` env var were vestigial after the
   non-Matrix transports were removed (nothing read them).

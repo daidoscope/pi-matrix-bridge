@@ -33,7 +33,6 @@ export interface MatrixBridgeConfig {
   };
   auth?: {
     trustedUsers?: string[];
-    adminUserId?: string;
     channels?: Record<string, { enabled: boolean; mode: "all" | "mentions" | "trusted-only" }>;
   };
   hideToolCalls?: boolean;

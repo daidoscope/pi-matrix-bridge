@@ -135,8 +135,7 @@ Example config:
 {
   "matrix": { "homeserverUrl": "https://matrix.org", "accessToken": "syt_...", "encryption": true },
   "auth": {
-    "trustedUsers": ["matrix:@alice:matrix.org"],
-    "adminUserId": "matrix:@alice:matrix.org"
+    "trustedUsers": ["matrix:@alice:matrix.org"]
   },
   "showWidget": true
 }

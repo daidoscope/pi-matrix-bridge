@@ -27,7 +27,6 @@ export class ChallengeAuth {
   private trustedUsers = new Set<string>();
   private channelAuth = new Map<string, ChannelAuth>();
   private blockedUsers = new Map<string, number>(); // userId -> unblock timestamp
-  private adminUserId?: string;
 
   constructor(
     private onShowCode: (code: string, username: string) => void,
@@ -45,14 +44,10 @@ export class ChallengeAuth {
    */
   loadFromConfig(config: {
     trustedUsers?: string[];
-    adminUserId?: string;
     channels?: Record<string, { enabled: boolean; mode: "all" | "mentions" | "trusted-only" }>;
   }): void {
     if (config.trustedUsers) {
       this.trustedUsers = new Set(config.trustedUsers);
-    }
-    if (config.adminUserId) {
-      this.adminUserId = config.adminUserId;
     }
     if (config.channels) {
       this.channelAuth = new Map(Object.entries(config.channels));
@@ -64,12 +59,10 @@ export class ChallengeAuth {
    */
   exportConfig(): {
     trustedUsers: string[];
-    adminUserId?: string;
     channels: Record<string, { enabled: boolean; mode: "all" | "mentions" | "trusted-only" }>;
   } {
     return {
       trustedUsers: Array.from(this.trustedUsers),
-      adminUserId: this.adminUserId,
       channels: Object.fromEntries(this.channelAuth),
     };
   }
@@ -102,11 +95,6 @@ export class ChallengeAuth {
     // DM: check trusted or initiate challenge
     if (!isGroupChat) {
       if (this.trustedUsers.has(namespacedUserId)) {
-        // Set as admin if first trusted user
-        if (!this.adminUserId) {
-          this.adminUserId = namespacedUserId;
-          this.onNotify(`🔐 ${username} is now the admin`, "info");
-        }
         return true;
       }
 
