@@ -65,9 +65,6 @@ async function doConnect(mctx: MenuContext): Promise<void> {
   }
   try {
     await mctx.transportManager.connectAll();
-    const cfg = loadConfig();
-    cfg.autoConnect = true;
-    saveConfig(cfg);
     mctx.ui.notify("✅ Connected to all configured transports", "info");
     mctx.updateWidget();
   } catch (err) {
@@ -79,9 +76,6 @@ async function doConnect(mctx: MenuContext): Promise<void> {
 async function doDisconnect(mctx: MenuContext): Promise<void> {
   await mctx.transportManager.disconnectAll();
   releaseLock();
-  const cfg = loadConfig();
-  cfg.autoConnect = false;
-  saveConfig(cfg);
   mctx.ui.notify("🔌 Disconnected from all transports", "info");
   mctx.updateWidget();
 }

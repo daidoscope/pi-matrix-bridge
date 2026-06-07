@@ -61,8 +61,8 @@ Works with any Matrix homeserver — Element X, Element Web, FluffyChat, etc. Th
 
 Or set via environment variables:
 ```bash
-export PI_MATRIX_HOMESERVER="https://matrix.org"
-export PI_MATRIX_ACCESS_TOKEN="syt_..."
+export PI_MATRIX_BRIDGE_HOMESERVER="https://matrix.org"
+export PI_MATRIX_BRIDGE_ACCESS_TOKEN="syt_..."
 ```
 
 E2EE is **on by default**. Verify the bot's device once from another Matrix client (Element, etc.) — until verified, encrypted rooms can't be decrypted in either direction.
@@ -97,7 +97,7 @@ The user enters the code in the bot chat to become a trusted user.
 
 ### Admin commands (in DM with the bot)
 
-Trusted users can DM the bot directly to manage state. Reply with `/help` for the full list:
+Trusted users can DM the bot directly to manage state. Reply with `/help` for the full list. Commands accept either a `/` or `!` prefix (e.g. `/help` or `!help`).
 
 | Command | Description |
 |---|---|
@@ -108,6 +108,14 @@ Trusted users can DM the bot directly to manage state. Reply with `/help` for th
 | `/enable <chatId> <all\|mentions\|trusted-only>` | Enable a channel |
 | `/disable <chatId>` | Disable a channel |
 | `/toggletools` | Toggle tool call visibility in replies |
+| `/session` | Show current session info (model, context usage, status) |
+| `/shutdown` | Stop pi — under systemd this restarts into a fresh session ([see below](#headless-always-on-systemd)) |
+
+Any authorized user (not just admins) can also send:
+
+| Message | Description |
+|---|---|
+| `stop` | Interrupt the current turn. Also accepts `/stop` or `!stop`. |
 
 ## Configuration
 
@@ -121,9 +129,7 @@ Example config:
     "trustedUsers": ["matrix:@alice:matrix.org"],
     "adminUserId": "matrix:@alice:matrix.org"
   },
-  "autoConnect": true,
-  "showWidget": true,
-  "debug": false
+  "showWidget": true
 }
 ```
 
@@ -131,9 +137,9 @@ Example config:
 
 Environment variables override file config:
 
-- `PI_MATRIX_HOMESERVER` — Matrix homeserver URL (e.g. `https://matrix.org`)
-- `PI_MATRIX_ACCESS_TOKEN` — Matrix access token
-- `MSG_BRIDGE_DEBUG` — Enable debug logging (true/false)
+- `PI_MATRIX_BRIDGE_AUTO_CONNECT` — connect on startup. **Defaults to off** — set to `1` to activate the bridge. Left unset, the plugin stays dormant (no connection) and you can connect manually with `/msg-bridge connect`. See [Headless / always-on](#headless-always-on-systemd).
+- `PI_MATRIX_BRIDGE_HOMESERVER` — Matrix homeserver URL (e.g. `https://matrix.org`)
+- `PI_MATRIX_BRIDGE_ACCESS_TOKEN` — Matrix access token
 
 ## Security
 
@@ -143,21 +149,6 @@ Environment variables override file config:
 - Challenge-based authentication for all new users
 - Transport-namespaced user IDs prevent impersonation
 
-## Troubleshooting
-
-Enable debug mode to see detailed logs:
-
-```json
-{
-  "debug": true
-}
-```
-
-Or:
-```bash
-export MSG_BRIDGE_DEBUG=true
-```
-
 ## Architecture
 
 Uses pi's native `sendUserMessage()` and `turn_end` events for two-way communication.
@@ -165,6 +156,37 @@ No tool-loop hacks needed — this is the pi-native way.
 
 Single-instance connection guard prevents duplicate polling when sub-agents spawn
 (global flag + PID lock file at `~/.pi/msg-bridge.lock`).
+
+## Headless / always-on (systemd)
+
+Run pi as a dedicated, always-on Matrix endpoint you can talk to from your phone — including starting a fresh conversation remotely.
+
+### Activation
+
+The plugin **does not connect on startup unless `PI_MATRIX_BRIDGE_AUTO_CONNECT=1`**. This lets a dedicated headless instance own the bot (it sets the env var) while a desktop pi with the same plugin installed stays dormant — no connection, no status widget, no notices. The desktop can still connect on demand with `/msg-bridge connect`.
+
+### Install the service
+
+The bundled installer writes a `systemd --user` unit, enables lingering (so it runs without an active login), and starts it:
+
+```bash
+./scripts/install-systemd.sh
+```
+
+Options: `--name` (unit name, default `pi-matrix-bridge`), `--workdir` (the agent's working directory — **required**; prompted if omitted), `--pi` (path to the `pi` binary), and `--uninstall`. If `PI_MATRIX_BRIDGE_HOMESERVER` / `PI_MATRIX_BRIDGE_ACCESS_TOKEN` are exported in your shell, they're baked into the unit; otherwise pi reads `~/.pi/msg-bridge.json`.
+
+The generated unit sets `PI_MATRIX_BRIDGE_AUTO_CONNECT=1`, `Restart=always`, and `RestartSec=2`. Manage it with:
+
+```bash
+systemctl --user status pi-matrix-bridge
+journalctl --user -u pi-matrix-bridge -f
+```
+
+### `/shutdown` = fresh session
+
+pi runs headless in "print" mode, but the bridge's open sockets keep the process alive as a daemon. The `/shutdown` admin command stops that process; with `Restart=always`, systemd relaunches pi, and since there's no `--continue`/`--resume`, it comes back in a **brand-new session**. The restart *is* the new session — no PTY, no tmux, no hacks.
+
+> **Note:** `/shutdown` resets the conversation for everyone and causes a few seconds of downtime. That's fine for a single-user mobile bridge. Without a supervisor, `/shutdown` simply stops pi — exactly what the name says.
 
 ## Development
 

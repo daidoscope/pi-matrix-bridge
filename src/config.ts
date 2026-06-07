@@ -28,14 +28,27 @@ export function loadConfig(): MsgBridgeConfig {
   }
 
   // Environment variables override file config (higher priority)
-  if (process.env.PI_MATRIX_HOMESERVER && process.env.PI_MATRIX_ACCESS_TOKEN) {
+  if (process.env.PI_MATRIX_BRIDGE_HOMESERVER && process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN) {
     config.matrix = {
-      homeserverUrl: process.env.PI_MATRIX_HOMESERVER,
-      accessToken: process.env.PI_MATRIX_ACCESS_TOKEN,
+      homeserverUrl: process.env.PI_MATRIX_BRIDGE_HOMESERVER,
+      accessToken: process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN,
     };
   }
 
   return config;
+}
+
+/**
+ * Whether to connect transports on startup. Controlled by the
+ * PI_MATRIX_BRIDGE_AUTO_CONNECT env var (not persisted config). Defaults to
+ * OFF — the plugin stays dormant unless this is set to "1"/"true"/"yes". The
+ * headless systemd unit sets it; a desktop pi with the plugin installed makes
+ * no connection on startup (and can still connect manually with
+ * /msg-bridge connect).
+ */
+export function shouldAutoConnect(): boolean {
+  const v = process.env.PI_MATRIX_BRIDGE_AUTO_CONNECT?.trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
 }
 
 /**

@@ -36,6 +36,12 @@ export interface ITransportProvider {
   sendTyping(chatId: string): Promise<void>;
 
   /**
+   * Clear the typing indicator for a chat (e.g. after an interrupted turn)
+   * @param chatId - Chat/channel identifier
+   */
+  stopTyping(chatId: string): Promise<void>;
+
+  /**
    * Register callback for incoming messages
    * @param handler - Message handler function
    */

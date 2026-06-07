@@ -33,7 +33,11 @@ export class ChallengeAuth {
     private onShowCode: (code: string, username: string) => void,
     private onNotify: (message: string, level?: "info" | "warning" | "error") => void,
     private onSendMessage?: (chatId: string, message: string) => Promise<void>,
-    private onSaveAuth?: () => void
+    private onSaveAuth?: () => void,
+    /** Invoked by the `/shutdown` admin command, after the ack reply is sent. */
+    private onShutdown?: () => void | Promise<void>,
+    /** Returns the text shown by the `/session` admin command. */
+    private onSessionInfo?: () => string
   ) {}
 
   /**
@@ -215,8 +219,10 @@ export class ChallengeAuth {
       return false;
     }
 
-    // Admin commands
-    const parts = text.split(/\s+/);
+    // Admin commands accept either a / or ! prefix — normalise ! to / so the
+    // switch only has to match the slash form.
+    const normalized = text.startsWith("!") ? `/${text.slice(1)}` : text;
+    const parts = normalized.split(/\s+/);
     const cmd = parts[0].toLowerCase();
 
     switch (cmd) {
@@ -274,6 +280,26 @@ export class ChallengeAuth {
         saveConfig(cfg);
         const state = cfg.hideToolCalls ? "hidden" : "shown";
         await sendMessage(`🔧 Tool calls ${state} in remote messages`);
+        return true;
+      }
+
+      case "/session": {
+        await sendMessage(
+          this.onSessionInfo ? this.onSessionInfo() : "Session info unavailable."
+        );
+        return true;
+      }
+
+      case "/shutdown": {
+        // Reply BEFORE shutting down — transports die once the process exits.
+        await sendMessage(
+          "👋 Shutting down. Under a supervisor (systemd `Restart=always`) I'll " +
+            "restart into a fresh session; otherwise pi just stops."
+        );
+        this.onNotify("🛑 /shutdown requested via remote bridge", "warning");
+        if (this.onShutdown) {
+          await this.onShutdown();
+        }
         return true;
       }
 
@@ -373,6 +399,8 @@ export class ChallengeAuth {
   private getHelpText(): string {
     return `**Admin Commands**
 
+_Commands accept either a \`/\` or \`!\` prefix (e.g. \`/help\` or \`!help\`)._
+
 *DM Only:*
 • \`/help\` — Show this help
 • \`/trusted\` — List trusted users
@@ -382,6 +410,11 @@ export class ChallengeAuth {
   Modes: \`all\`, \`mentions\`, \`trusted-only\`
 • \`/disable <chatId>\` — Disable a channel
 • \`/toggletools\` — Toggle tool call visibility in replies
+• \`/session\` — Show current session info (model, context, status)
+• \`/shutdown\` — Stop pi (restarts into a fresh session under systemd)
+
+*Any authorized user:*
+• \`stop\` — Interrupt the current turn (also \`/stop\` or \`!stop\`)
 
 *Authentication:*
 • First DM to bot → 6-digit code shown in terminal

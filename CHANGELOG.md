@@ -7,9 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`/shutdown` admin command** (trusted users, DM only). Stops pi; under a
+  systemd unit with `Restart=always` this relaunches into a fresh session.
+- **`stop` reserved word** (any authorized user) — interrupts the current turn
+  via `ctx.abort()`. Accepts `stop`, `/stop`, or `!stop`.
+- **`/session` admin command** — read-only session info (model, context usage,
+  thinking level, entry count, idle status).
+- Admin commands now accept either a `/` or `!` prefix (e.g. `/help` or `!help`).
+- `scripts/install-systemd.sh` — installs a `systemd --user` unit for the
+  headless/always-on deployment (sets `PI_MATRIX_BRIDGE_AUTO_CONNECT=1`,
+  `Restart=always`, enables lingering). Documented in the README.
+
 ### Changed
 - **Forked and renamed to `pi-matrix-bridge`.** This is a Matrix-only fork of
   [tintinweb/pi-messenger-bridge](https://github.com/tintinweb/pi-messenger-bridge) (MIT).
+- Unified all env vars under the `PI_MATRIX_BRIDGE_` prefix (e.g. the Matrix creds
+  `PI_MATRIX_HOMESERVER`/`PI_MATRIX_ACCESS_TOKEN` →
+  `PI_MATRIX_BRIDGE_HOMESERVER`/`PI_MATRIX_BRIDGE_ACCESS_TOKEN`).
+- **Activation is now a single switch: `PI_MATRIX_BRIDGE_AUTO_CONNECT`, defaulting
+  OFF.** The plugin doesn't connect on startup unless it's set to `1` — so a
+  desktop pi with the plugin installed stays dormant (no connection, no widget,
+  no notices) while a headless instance sets the var to own the bot. Connect a
+  dormant instance on demand with `/msg-bridge connect`.
+- `autoConnect` moved out of persisted config to that env var; `/msg-bridge
+  connect`/`disconnect` no longer write a persisted preference.
+- The status widget now renders only when a transport is actually connected.
+
+### Removed
+- Dropped the unused `debug` option — the `config.debug` field and the
+  `MSG_BRIDGE_DEBUG`/`PI_MATRIX_BRIDGE_DEBUG` env var were vestigial after the
+  non-Matrix transports were removed (nothing read them).
 - Removed the Telegram, WhatsApp, Slack, and Discord transports and their dependencies
   (`node-telegram-bot-api`, `@whiskeysockets/baileys`, `@slack/bolt`, `discord.js`,
   `qrcode-terminal`). Only the Matrix transport (`matrix-bot-sdk`) remains.

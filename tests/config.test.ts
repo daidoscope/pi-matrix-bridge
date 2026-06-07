@@ -9,8 +9,9 @@ describe('config', () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'msg-bridge-config-'));
-    delete process.env.PI_MATRIX_HOMESERVER;
-    delete process.env.PI_MATRIX_ACCESS_TOKEN;
+    delete process.env.PI_MATRIX_BRIDGE_HOMESERVER;
+    delete process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN;
+    delete process.env.PI_MATRIX_BRIDGE_AUTO_CONNECT;
     vi.resetModules();
   });
 
@@ -35,12 +36,12 @@ describe('config', () => {
   it('saves and loads config roundtrip', async () => {
     const { loadConfig, saveConfig } = await importConfig();
 
-    saveConfig({ matrix: { homeserverUrl: 'https://matrix.org', accessToken: 'test-token' }, autoConnect: true, debug: false });
+    saveConfig({ matrix: { homeserverUrl: 'https://matrix.org', accessToken: 'test-token' }, showWidget: true, hideToolCalls: false });
     const loaded = loadConfig();
 
     expect(loaded.matrix?.accessToken).toBe('test-token');
-    expect(loaded.autoConnect).toBe(true);
-    expect(loaded.debug).toBe(false);
+    expect(loaded.showWidget).toBe(true);
+    expect(loaded.hideToolCalls).toBe(false);
   });
 
   it('creates .pi directory with 700 permissions', async () => {
@@ -62,19 +63,19 @@ describe('config', () => {
   it('env vars override file values for the same transport', async () => {
     const { loadConfig, saveConfig } = await importConfig();
 
-    saveConfig({ matrix: { homeserverUrl: 'https://matrix.org', accessToken: 'file-token' }, autoConnect: true });
-    process.env.PI_MATRIX_HOMESERVER = 'https://matrix.org';
-    process.env.PI_MATRIX_ACCESS_TOKEN = 'env-token';
+    saveConfig({ matrix: { homeserverUrl: 'https://matrix.org', accessToken: 'file-token' }, showWidget: true });
+    process.env.PI_MATRIX_BRIDGE_HOMESERVER = 'https://matrix.org';
+    process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN = 'env-token';
 
     const loaded = loadConfig();
     expect(loaded.matrix?.accessToken).toBe('env-token');
     // Non-overridden fields survive
-    expect(loaded.autoConnect).toBe(true);
+    expect(loaded.showWidget).toBe(true);
   });
 
   it('loads Matrix env vars', async () => {
-    process.env.PI_MATRIX_HOMESERVER = 'https://matrix.org';
-    process.env.PI_MATRIX_ACCESS_TOKEN = 'mx-token';
+    process.env.PI_MATRIX_BRIDGE_HOMESERVER = 'https://matrix.org';
+    process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN = 'mx-token';
 
     const { loadConfig } = await importConfig();
     const config = loadConfig();
@@ -99,8 +100,8 @@ describe('config', () => {
     mkdirSync(piDir, { recursive: true });
     writeFileSync(join(piDir, 'msg-bridge.json'), 'not json');
 
-    process.env.PI_MATRIX_HOMESERVER = 'https://matrix.org';
-    process.env.PI_MATRIX_ACCESS_TOKEN = 'env-token';
+    process.env.PI_MATRIX_BRIDGE_HOMESERVER = 'https://matrix.org';
+    process.env.PI_MATRIX_BRIDGE_ACCESS_TOKEN = 'env-token';
 
     const { loadConfig } = await importConfig();
     const config = loadConfig();
@@ -109,7 +110,7 @@ describe('config', () => {
 
   it('requires both Matrix env vars for matrix config', async () => {
     // Only homeserver — should not set matrix
-    process.env.PI_MATRIX_HOMESERVER = 'https://matrix.org';
+    process.env.PI_MATRIX_BRIDGE_HOMESERVER = 'https://matrix.org';
 
     const { loadConfig } = await importConfig();
     expect(loadConfig().matrix).toBeUndefined();
@@ -118,15 +119,36 @@ describe('config', () => {
   it('saves and loads hideToolCalls config', async () => {
     const { loadConfig, saveConfig } = await importConfig();
 
-    saveConfig({ hideToolCalls: true, autoConnect: true });
+    saveConfig({ hideToolCalls: true, showWidget: true });
     const loaded = loadConfig();
 
     expect(loaded.hideToolCalls).toBe(true);
-    expect(loaded.autoConnect).toBe(true);
+    expect(loaded.showWidget).toBe(true);
   });
 
   it('hideToolCalls defaults to undefined (not hidden)', async () => {
     const { loadConfig } = await importConfig();
     expect(loadConfig().hideToolCalls).toBeUndefined();
+  });
+
+  it('shouldAutoConnect defaults to false when env var is unset', async () => {
+    const { shouldAutoConnect } = await importConfig();
+    expect(shouldAutoConnect()).toBe(false);
+  });
+
+  it('shouldAutoConnect is true only for "1"/"true"/"yes" (case-insensitive)', async () => {
+    const { shouldAutoConnect } = await importConfig();
+    for (const v of ['1', 'true', 'TRUE', ' Yes ']) {
+      process.env.PI_MATRIX_BRIDGE_AUTO_CONNECT = v;
+      expect(shouldAutoConnect()).toBe(true);
+    }
+  });
+
+  it('shouldAutoConnect is false for other values', async () => {
+    const { shouldAutoConnect } = await importConfig();
+    for (const v of ['0', 'false', 'off', 'nope']) {
+      process.env.PI_MATRIX_BRIDGE_AUTO_CONNECT = v;
+      expect(shouldAutoConnect()).toBe(false);
+    }
   });
 });

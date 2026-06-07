@@ -212,6 +212,15 @@ export class MatrixProvider implements ITransportProvider {
     }
   }
 
+  async stopTyping(chatId: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      await this.client.setTyping(chatId, false);
+    } catch {
+      // Ignore typing indicator errors
+    }
+  }
+
   onMessage(handler: (message: ExternalMessage) => void): void {
     this.messageHandler = handler;
   }
@@ -265,8 +274,9 @@ export class MatrixProvider implements ITransportProvider {
       this.type
     );
 
-    // Handle challenge codes and commands in DMs
-    if (!isGroupChat && (messageText.startsWith("/") || messageText.match(/^\d{6}$/))) {
+    // Handle challenge codes and commands in DMs. Admin commands accept either
+    // a / or ! prefix (normalised in handleAdminCommand).
+    if (!isGroupChat && (messageText.startsWith("/") || messageText.startsWith("!") || messageText.match(/^\d{6}$/))) {
       const handled = await this.auth.handleAdminCommand(
         messageText,
         chatId,

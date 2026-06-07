@@ -95,6 +95,16 @@ export class TransportManager {
   }
 
   /**
+   * Clear the typing indicator for a chat via a specific transport
+   */
+  async stopTyping(chatId: string, transportType: string): Promise<void> {
+    const transport = this.transports.get(transportType);
+    if (transport?.isConnected) {
+      await transport.stopTyping(chatId);
+    }
+  }
+
+  /**
    * Register handler for incoming messages from all transports
    */
   onMessage(handler: (message: ExternalMessage) => void): void {

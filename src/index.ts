@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ChallengeAuth } from "./auth/challenge-auth.js";
-import { loadConfig, saveConfig } from "./config.js";
+import { loadConfig, saveConfig, shouldAutoConnect } from "./config.js";
 import { extractTextFromMessage, formatToolCalls, hasToolCalls, splitMessage } from "./formatting.js";
 import { acquireLock, releaseLock } from "./lock.js";
 import { TransportManager } from "./transports/manager.js";
@@ -48,6 +48,43 @@ export default function (pi: ExtensionAPI): void {
   }
 
   /**
+   * Build the read-only summary shown by the `/session` admin command.
+   * Everything here is on the base ExtensionContext (plus pi.getThinkingLevel).
+   */
+  function formatSessionInfo(): string {
+    const sm = ctx.sessionManager;
+    const usage = ctx.getContextUsage();
+
+    const lines = [
+      "━━━ Session ━━━",
+      `Model: ${ctx.model?.name ?? "unknown"}`,
+      `Thinking: ${pi.getThinkingLevel()}`,
+    ];
+
+    if (usage) {
+      const tokens = usage.tokens != null ? usage.tokens.toLocaleString() : "?";
+      const window = usage.contextWindow.toLocaleString();
+      const pct = usage.percent != null ? ` (${usage.percent.toFixed(0)}%)` : "";
+      lines.push(`Context: ${tokens} / ${window}${pct}`);
+    }
+
+    lines.push(`Entries: ${sm.getEntries().length}`);
+    const name = sm.getSessionName();
+    if (name) lines.push(`Name: ${name}`);
+    lines.push(`Status: ${ctx.isIdle() ? "idle" : "working"}`);
+
+    return lines.join("\n");
+  }
+
+  /**
+   * /shutdown — the ack reply is already sent; gracefully stop pi. Under a
+   * systemd unit with Restart=always this relaunches into a fresh session.
+   */
+  function handleShutdown(): void {
+    ctx.shutdown();
+  }
+
+  /**
    * Save auth state to config
    */
   function saveAuthState(): void {
@@ -77,7 +114,9 @@ export default function (pi: ExtensionAPI): void {
       async (_chatId, _message) => {
         // Challenge notifications are sent via the transport's sendMessage
       },
-      saveAuthState
+      saveAuthState,
+      handleShutdown,
+      formatSessionInfo,
     );
 
     if (config.auth) {
@@ -93,7 +132,7 @@ export default function (pi: ExtensionAPI): void {
 
       // Auto-connect if configured
       const transports = transportManager.getAllTransports();
-      if (transports.length > 0 && config.autoConnect !== false) {
+      if (transports.length > 0 && shouldAutoConnect()) {
         if (!acquireLock()) {
           ctx.ui.notify("ℹ️ msg-bridge: another instance is already connected — skipping auto-connect", "info");
         } else {
@@ -112,6 +151,24 @@ export default function (pi: ExtensionAPI): void {
     });
 
     transportManager.onMessage((msg) => {
+      // "stop" interrupts the current turn. Accept a bare word or a / or !
+      // prefix ("stop", "/stop", "!stop"). It's a reserved word for any
+      // authorized user (onMessage only fires post-auth) and is not forwarded
+      // to the agent.
+      const stripped = msg.content.trim().replace(/^[/!]/, "").toLowerCase();
+      if (stripped === "stop") {
+        if (!ctx.isIdle()) ctx.abort();
+        // Clear the typing indicator left over from the interrupted turn so the
+        // client stops showing the "thinking" animation immediately.
+        transportManager.stopTyping(msg.chatId, msg.transport).catch(() => {});
+        transportManager
+          .sendMessage(msg.chatId, msg.transport, "⏹️ Stopped the current turn.")
+          .catch((err) =>
+            ctx.ui.notify(`Failed to send stop ack: ${(err as Error).message}`, "error")
+          );
+        return;
+      }
+
       pendingRemoteChat = {
         chatId: msg.chatId,
         transport: msg.transport,
@@ -120,7 +177,12 @@ export default function (pi: ExtensionAPI): void {
       };
 
       const taggedMessage = `[📱 @${msg.username} via ${msg.transport}]: ${msg.content}`;
-      pi.sendUserMessage(taggedMessage, { deliverAs: "followUp" });
+      // Only queue as a follow-up when the agent is mid-turn — that's the case
+      // `followUp` was added for (avoiding a crash on a message arriving during
+      // a turn, fixes #10). When idle, send normally so the message triggers a
+      // turn and renders immediately; otherwise the very first message can sit
+      // in the queue without ever showing.
+      pi.sendUserMessage(taggedMessage, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
     });
 
     transportManager.onError((err, transport) => {
@@ -250,9 +312,6 @@ export default function (pi: ExtensionAPI): void {
         }
         try {
           await transportManager.connectAll();
-          const cfg = loadConfig();
-          cfg.autoConnect = true;
-          saveConfig(cfg);
           context.ui.notify("✅ Connected to all configured transports", "info");
           updateWidget();
         } catch (err) {
@@ -267,9 +326,6 @@ export default function (pi: ExtensionAPI): void {
       case "disconnect": {
         await transportManager.disconnectAll();
         releaseLock();
-        const cfg = loadConfig();
-        cfg.autoConnect = false;
-        saveConfig(cfg);
         context.ui.notify("🔌 Disconnected from all transports", "info");
         updateWidget();
         break;
