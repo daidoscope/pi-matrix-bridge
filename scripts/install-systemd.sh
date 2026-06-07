@@ -72,12 +72,24 @@ if [[ -z "${PI_BIN}" ]]; then
   exit 1
 fi
 
+# Resolve node's directory so the unit's PATH can find it. The pi binary starts
+# with `#!/usr/bin/env node`, but systemd --user services run with a minimal PATH
+# (/usr/local/bin:/usr/bin:/bin) that excludes version managers like nvm/fnm —
+# without this, ExecStart fails with: /usr/bin/env: 'node': No such file or directory.
+NODE_BIN="$(command -v node || true)"
+if [[ -z "${NODE_BIN}" ]]; then
+  echo "error: could not find 'node' on PATH (needed by the pi shebang)." >&2
+  exit 1
+fi
+NODE_DIR="$(dirname "$(readlink -f "${NODE_BIN}")")"
+
 mkdir -p "${UNIT_DIR}" "${WORKDIR}"
 
 # PI_MATRIX_BRIDGE_AUTO_CONNECT=1 makes this headless instance connect on startup.
 # It defaults off, so a desktop pi with the plugin installed stays dormant (no
 # connection, no noise). Pass Matrix creds through too, only if set in the shell.
-ENV_LINES=$'\n'"Environment=PI_MATRIX_BRIDGE_AUTO_CONNECT=1"
+ENV_LINES=$'\n'"Environment=PATH=${NODE_DIR}:/usr/local/bin:/usr/bin:/bin"
+ENV_LINES+=$'\n'"Environment=PI_MATRIX_BRIDGE_AUTO_CONNECT=1"
 if [[ -n "${PI_MATRIX_BRIDGE_HOMESERVER:-}" ]]; then
   ENV_LINES+=$'\n'"Environment=PI_MATRIX_BRIDGE_HOMESERVER=${PI_MATRIX_BRIDGE_HOMESERVER}"
 fi
@@ -93,7 +105,11 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=${WORKDIR}${ENV_LINES}
-ExecStart=${PI_BIN}
+# pi picks its mode from process.stdin.isTTY: no TTY -> "print" mode, which
+# disposes the extension runtime at stdin EOF and crashes the always-on bridge
+# (stale ctx). Wrap in script(1) to allocate a PTY so pi runs interactive and
+# stays alive. (-q quiet, -f flush to journal, -e propagate pi's exit code.)
+ExecStart=/usr/bin/script -qfec ${PI_BIN} /dev/null
 # Restart even on a clean exit (code 0), so /shutdown -> ctx.shutdown() relaunches.
 Restart=always
 RestartSec=2
