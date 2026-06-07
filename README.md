@@ -16,6 +16,7 @@ Remote users can interact with your pi coding agent via Element, FluffyChat, or 
 - 💾 Persistent config (auth state, auto-connect, widget preference)
 - 🔧 Tool call visibility for remote users
 - 💭 Live streaming — thinking and the response stream into editable messages so you can steer/stop mid-turn
+- ⏳ Rate-limit handling — backs off and retries on Matrix 429s so messages are never silently dropped
 - 📝 Multi-turn conversation support
 - 🔑 Secure permissions (chmod 600 for config files, 700 for directories)
 
@@ -125,6 +126,16 @@ Any authorized user (not just admins) can also send:
 Both the model's **thinking** (💭) and its **response** stream into messages that are edited in place (token-by-token, throttled) as they're generated — so you can read where a turn is heading and `stop` (or steer) before it commits to a wrong action. Each **tool call** (🔧) appears the moment it starts running (handy for tools that take a few seconds), and its **output** (↳, truncated) is appended when it finishes. The typing indicator stays active alongside them.
 
 Thinking is **on by default** — toggle with `/togglethinking` (DM admin) or `/matrix-bridge togglethinking`, or set `"hideThinking": true` in the config. (The response always streams.)
+
+## Rate-limit handling
+
+Matrix homeservers return `429 Too Many Requests` (with a `retry_after_ms` hint) when you send too fast — and live streaming, which edits messages many times per turn, makes bursts common. Rather than letting a rate-limited message silently vanish, the bridge routes every outbound send and edit through a single serialized queue:
+
+- On a 429 it pauses all sends, waits the server-requested `retry_after`, then retries the same message — so nothing is dropped, and ordering is preserved.
+- The first message delivered after a backoff carries a small note (`⏳ *(delayed — rate limited)*`) so you know a delay occurred.
+- Typing indicators are suppressed while rate-limited (they'd only add load), and rapid in-place edits to the same message are coalesced so a backoff doesn't flush a run of stale intermediate edits.
+
+This is automatic — there's nothing to configure.
 
 ## Configuration
 

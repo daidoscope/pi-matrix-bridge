@@ -15,10 +15,32 @@ import type { ITransportProvider } from "./interface.js";
 import {
   extractUsername,
   formatForMatrix,
+  getRetryAfterMs,
+  RATE_LIMIT_NOTE,
   shouldSkipEvent,
   stripBotMention,
   wasBotMentioned,
 } from "./matrix-utils.js";
+
+/** One queued outbound request (new message or in-place edit). */
+interface OutboundJob {
+  kind: "send" | "edit";
+  chatId: string;
+  text: string;
+  /** Target event id — required for edits. */
+  messageId?: string;
+  resolve: (eventId: string) => void;
+  reject: (err: Error) => void;
+  /** How many times dispatch has been attempted (for the rate-limit retry cap). */
+  attempts: number;
+}
+
+/** Give up on a single job after this many rate-limited retries. */
+const MAX_SEND_ATTEMPTS = 10;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // matrix-bot-sdk logs to the console, which corrupts pi's interactive TUI (the
 // crypto/sync logs land mid-render, e.g. eating an incoming message). Silence it
@@ -46,6 +68,15 @@ export class MatrixProvider implements ITransportProvider {
   private joinedRooms = new Set<string>();
   private roomMemberCount = new Map<string, number>();
   private connectedAt = 0;
+
+  // Serialized outbound queue. Every send/edit goes through it so a 429 backs off
+  // and retries instead of dropping the message. `rateLimitedUntil` is a global
+  // pause (Matrix rate-limits per connection, not per room); `rateLimitNotePending`
+  // makes the next new message carry a small "delayed" note.
+  private sendQueue: OutboundJob[] = [];
+  private processing = false;
+  private rateLimitedUntil = 0;
+  private rateLimitNotePending = false;
 
   constructor(
     private config: { homeserverUrl: string; accessToken: string; encryption?: boolean },
@@ -161,6 +192,15 @@ export class MatrixProvider implements ITransportProvider {
   async disconnect(): Promise<void> {
     if (!this._isConnected || !this.client) return;
 
+    // Fail any queued sends so awaiting callers don't hang on a dead connection.
+    const pending = this.sendQueue;
+    this.sendQueue = [];
+    this.rateLimitedUntil = 0;
+    this.rateLimitNotePending = false;
+    for (const job of pending) {
+      job.reject(new Error("Matrix transport disconnected"));
+    }
+
     this.client.stop();
     this._isConnected = false;
     this.client = undefined;
@@ -176,22 +216,113 @@ export class MatrixProvider implements ITransportProvider {
     }
     if (!text?.trim()) return "";
 
-    const { body, formattedBody } = formatForMatrix(text);
-
-    return await this.client.sendMessage(chatId, {
-      msgtype: "m.text",
-      body,
-      ...(formattedBody && {
-        format: "org.matrix.custom.html",
-        formatted_body: formattedBody,
-      }),
-    });
+    return this.enqueue({ kind: "send", chatId, text });
   }
 
   async editMessage(chatId: string, messageId: string, text: string): Promise<void> {
     if (!this.client || !messageId || !text?.trim()) return;
 
-    const { body, formattedBody } = formatForMatrix(text);
+    await this.enqueue({ kind: "edit", chatId, messageId, text });
+  }
+
+  /**
+   * Append a job to the outbound queue and start the processor. Consecutive
+   * pending edits to the same message are coalesced (the queued text is replaced)
+   * so a backoff doesn't flush a run of stale intermediate edits.
+   */
+  private enqueue(spec: Pick<OutboundJob, "kind" | "chatId" | "text" | "messageId">): Promise<string> {
+    if (spec.kind === "edit") {
+      const pending = this.findCoalescableEdit(spec.chatId, spec.messageId);
+      if (pending) {
+        pending.text = spec.text;
+        return new Promise((resolve, reject) => {
+          // Ride along with the existing job's outcome.
+          const prevResolve = pending.resolve;
+          const prevReject = pending.reject;
+          pending.resolve = (id) => { prevResolve(id); resolve(id); };
+          pending.reject = (err) => { prevReject(err); reject(err); };
+        });
+      }
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      this.sendQueue.push({ ...spec, resolve, reject, attempts: 0 });
+      void this.processQueue();
+    });
+  }
+
+  /** Find a not-yet-dispatched edit for the same message that can be coalesced. */
+  private findCoalescableEdit(chatId: string, messageId?: string): OutboundJob | undefined {
+    if (!messageId) return undefined;
+    // Skip the head while it's actively being dispatched — only later jobs are safe to mutate.
+    const start = this.processing ? 1 : 0;
+    for (let i = start; i < this.sendQueue.length; i++) {
+      const job = this.sendQueue[i];
+      if (job.kind === "edit" && job.chatId === chatId && job.messageId === messageId) {
+        return job;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Drain the outbound queue one job at a time, honoring the rate-limit backoff.
+   * On a 429 the head job stays in place and is retried after the server's
+   * retry_after delay; other errors reject the job and move on.
+   */
+  private async processQueue(): Promise<void> {
+    if (this.processing) return;
+    this.processing = true;
+    try {
+      while (this.sendQueue.length > 0) {
+        const wait = this.rateLimitedUntil - Date.now();
+        if (wait > 0) await sleep(wait);
+
+        const job = this.sendQueue[0];
+        job.attempts++;
+        try {
+          const eventId = await this.dispatch(job);
+          this.sendQueue.shift();
+          job.resolve(eventId);
+        } catch (err) {
+          const retryMs = getRetryAfterMs(err);
+          if (retryMs != null && job.attempts < MAX_SEND_ATTEMPTS) {
+            // Rate limited: pause all sends, flag the note, retry this same job.
+            this.rateLimitedUntil = Date.now() + retryMs;
+            this.rateLimitNotePending = true;
+          } else {
+            this.sendQueue.shift();
+            job.reject(err as Error);
+          }
+        }
+      }
+    } finally {
+      this.processing = false;
+    }
+  }
+
+  /** Perform the actual SDK call for a single queued job. */
+  private async dispatch(job: OutboundJob): Promise<string> {
+    if (!this.client) throw new Error("Matrix client not connected");
+
+    if (job.kind === "send") {
+      let text = job.text;
+      if (this.rateLimitNotePending) {
+        text = `${RATE_LIMIT_NOTE}\n\n${text}`;
+        this.rateLimitNotePending = false;
+      }
+      const { body, formattedBody } = formatForMatrix(text);
+      return await this.client.sendMessage(job.chatId, {
+        msgtype: "m.text",
+        body,
+        ...(formattedBody && {
+          format: "org.matrix.custom.html",
+          formatted_body: formattedBody,
+        }),
+      });
+    }
+
+    const { body, formattedBody } = formatForMatrix(job.text);
     const newContent = {
       msgtype: "m.text",
       body,
@@ -203,17 +334,19 @@ export class MatrixProvider implements ITransportProvider {
 
     // m.replace edit. The top-level body carries the "* " fallback shown by
     // clients that don't render edits; m.new_content holds the real replacement.
-    await this.client.sendEvent(chatId, "m.room.message", {
+    await this.client.sendEvent(job.chatId, "m.room.message", {
       ...newContent,
       body: `* ${body}`,
       ...(formattedBody && { formatted_body: `* ${formattedBody}` }),
       "m.new_content": newContent,
-      "m.relates_to": { rel_type: "m.replace", event_id: messageId },
+      "m.relates_to": { rel_type: "m.replace", event_id: job.messageId },
     });
+    return "";
   }
 
   async sendTyping(chatId: string): Promise<void> {
-    if (!this.client) return;
+    // Don't pile typing requests onto a server that's already rate-limiting us.
+    if (!this.client || this.rateLimitedUntil > Date.now()) return;
     try {
       await this.client.setTyping(chatId, true, 10000);
     } catch {
@@ -222,7 +355,7 @@ export class MatrixProvider implements ITransportProvider {
   }
 
   async stopTyping(chatId: string): Promise<void> {
-    if (!this.client) return;
+    if (!this.client || this.rateLimitedUntil > Date.now()) return;
     try {
       await this.client.setTyping(chatId, false);
     } catch {

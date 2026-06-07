@@ -4,10 +4,46 @@ import {
   escapeHtml,
   extractUsername,
   formatForMatrix,
+  getRetryAfterMs,
   shouldSkipEvent,
   stripBotMention,
   wasBotMentioned,
 } from "./matrix-utils.js";
+
+// ─── getRetryAfterMs ──────────────────────────────────────────
+
+describe("getRetryAfterMs", () => {
+  it("reads the typed retryAfterMs field", () => {
+    expect(getRetryAfterMs({ statusCode: 429, retryAfterMs: 1856 })).toBe(1856);
+  });
+
+  it("falls back to the raw body.retry_after_ms", () => {
+    expect(
+      getRetryAfterMs({ statusCode: 429, body: { errcode: "M_LIMIT_EXCEEDED", retry_after_ms: 2000 } })
+    ).toBe(2000);
+  });
+
+  it("uses a default backoff for a 429 with no hint", () => {
+    expect(getRetryAfterMs({ statusCode: 429 })).toBe(1000);
+  });
+
+  it("treats M_LIMIT_EXCEEDED as rate-limited even without a 429 status", () => {
+    expect(getRetryAfterMs({ errcode: "M_LIMIT_EXCEEDED" })).toBe(1000);
+  });
+
+  it("returns null for a non-rate-limit error", () => {
+    expect(getRetryAfterMs({ statusCode: 403, errcode: "M_FORBIDDEN" })).toBeNull();
+  });
+
+  it("returns null for a plain Error", () => {
+    expect(getRetryAfterMs(new Error("boom"))).toBeNull();
+  });
+
+  it("returns null for null/undefined", () => {
+    expect(getRetryAfterMs(undefined)).toBeNull();
+    expect(getRetryAfterMs(null)).toBeNull();
+  });
+});
 
 // ─── escapeHtml ───────────────────────────────────────────────
 

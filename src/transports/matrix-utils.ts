@@ -3,6 +3,40 @@
  * Extracted for testability — no SDK or network dependencies.
  */
 
+/** Small note prepended to the first message delivered after a rate-limit backoff. */
+export const RATE_LIMIT_NOTE = "⏳ *(delayed — rate limited)*";
+
+/** Default backoff when the server returns a 429 without a retry_after hint. */
+const DEFAULT_RETRY_AFTER_MS = 1000;
+
+/**
+ * Extract the rate-limit backoff (in ms) from a thrown Matrix error.
+ *
+ * Returns the time to wait before retrying if the error is a rate-limit (429 /
+ * M_LIMIT_EXCEEDED, or any error carrying a retry_after hint), otherwise null.
+ * Reads defensively from both the typed `retryAfterMs` field and the raw
+ * `body.retry_after_ms`, since either may be present depending on the call path.
+ */
+export function getRetryAfterMs(err: unknown): number | null {
+  if (!err || typeof err !== "object") return null;
+  const e = err as {
+    statusCode?: number;
+    errcode?: string;
+    retryAfterMs?: number;
+    body?: { errcode?: string; retry_after_ms?: number };
+  };
+
+  const hint = e.retryAfterMs ?? e.body?.retry_after_ms;
+  const isRateLimited =
+    e.statusCode === 429 ||
+    e.errcode === "M_LIMIT_EXCEEDED" ||
+    e.body?.errcode === "M_LIMIT_EXCEEDED" ||
+    typeof hint === "number";
+
+  if (!isRateLimited) return null;
+  return typeof hint === "number" && hint > 0 ? hint : DEFAULT_RETRY_AFTER_MS;
+}
+
 /** Escape HTML special characters */
 export function escapeHtml(text: string): string {
   return text
