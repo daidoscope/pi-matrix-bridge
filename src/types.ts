@@ -31,6 +31,10 @@ export interface MatrixBridgeConfig {
     accessToken: string;
     encryption?: boolean;
   };
+  defaultOutbound?: {
+    chatId: string;
+    transport?: "matrix";
+  };
   auth?: {
     trustedUsers?: string[];
     channels?: Record<string, { enabled: boolean; mode: "all" | "mentions" | "trusted-only" }>;

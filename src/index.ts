@@ -29,6 +29,7 @@ export default function (pi: ExtensionAPI): void {
   let pendingRemoteChat: PendingRemoteChat | null = null;
   let auth: ChallengeAuth;
   let ctx: ExtensionContext;
+  let fallbackRemoteChat: PendingRemoteChat | null = null;
 
   // Live streaming state — thinking and the response each get one message that's
   // edited in place as tokens arrive, so the user can read along and steer/stop.
@@ -116,6 +117,10 @@ export default function (pi: ExtensionAPI): void {
     config.auth = auth.exportConfig();
     saveConfig(config);
   }
+  
+  function getOutboundChat(): PendingRemoteChat | null {
+    return pendingRemoteChat ?? fallbackRemoteChat;
+  }
 
   /**
    * Send or edit-in-place a streamed message, throttling edits. The first push
@@ -166,8 +171,8 @@ export default function (pi: ExtensionAPI): void {
    * render (or turn_end), so nothing is lost.
    */
   async function flushResponse(): Promise<void> {
-    if (!pendingRemoteChat || streamEditInFlight) return;
-    const chat = pendingRemoteChat;
+    const chat = getOutboundChat();
+    if (!chat || streamEditInFlight) return;
     streamEditInFlight = true;
     try {
       await pushResponse(chat, true);
@@ -295,17 +300,24 @@ export default function (pi: ExtensionAPI): void {
     const cfg = loadConfig();
     turnShowThinking = cfg.hideThinking !== true;
     turnShowTools = cfg.hideToolCalls !== true;
-
-    if (pendingRemoteChat) {
-      try {
-        await transportManager.sendTyping(
-          pendingRemoteChat.chatId,
-          pendingRemoteChat.transport
-        );
-      } catch (_err) {
-        // Ignore typing indicator errors
+    fallbackRemoteChat = cfg.defaultOutbound?.chatId
+    ? {
+        chatId: cfg.defaultOutbound.chatId,
+        transport: cfg.defaultOutbound.transport ?? "matrix",
+        username: "pi",
+        messageId: "",
       }
+    : null;
+
+    const chat = getOutboundChat();
+
+  if (chat) {
+    try {
+      await transportManager.sendTyping(chat.chatId, chat.transport);
+    } catch (_err) {
+      // Ignore typing indicator errors
     }
+  }
   });
 
   /**
@@ -314,12 +326,12 @@ export default function (pi: ExtensionAPI): void {
    * steer/stop a wrong turn before it commits.
    */
   pi.on("message_update", async (event, _context) => {
-    if (!pendingRemoteChat || streamEditInFlight) return;
+    const chat = getOutboundChat();
+    if (!chat || streamEditInFlight) return;
 
     const message = event.message as AssistantMessage;
     if (!Array.isArray(message?.content)) return;
 
-    const chat = pendingRemoteChat;
     streamEditInFlight = true;
     try {
       if (turnShowThinking) {
@@ -346,7 +358,7 @@ export default function (pi: ExtensionAPI): void {
    * appended to the live response message.
    */
   pi.on("tool_execution_start", async (event, _context) => {
-    if (!pendingRemoteChat || !turnShowTools) return;
+    if (!turnShowTools || !getOutboundChat()) return;
 
     // Record first so it's never lost — turn_end renders from toolEntries even if
     // the live edit below is skipped (e.g. a render is mid-flight).
@@ -358,7 +370,7 @@ export default function (pi: ExtensionAPI): void {
    * Append each tool's output under its call line once it finishes.
    */
   pi.on("tool_execution_end", async (event, _context) => {
-    if (!pendingRemoteChat || !turnShowTools) return;
+    if (!turnShowTools || !getOutboundChat()) return;
 
     const entry = toolEntries.find((e) => e.id === event.toolCallId);
     if (!entry) return;
@@ -371,8 +383,8 @@ export default function (pi: ExtensionAPI): void {
    * Handle turn end - send response back to messenger
    */
   pi.on("turn_end", async (event, _context) => {
-    if (!pendingRemoteChat) return;
-    const chat = pendingRemoteChat;
+    const chat = getOutboundChat();
+    if (!chat) return;
 
     try {
       const message = event.message as AssistantMessage;
@@ -422,7 +434,7 @@ export default function (pi: ExtensionAPI): void {
         pendingRemoteChat = null;
       }
     } catch (err) {
-      const transport = pendingRemoteChat?.transport ?? "unknown";
+      const transport = chat.transport ?? "unknown";
       ctx.ui.notify(
         `Failed to send response to ${transport}: ${(err as Error).message}`,
         "error"
