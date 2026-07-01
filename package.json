@@ -6,13 +6,13 @@
   "types": "dist/index.d.ts",
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./matrix-bridge/index.js"
     ],
     "video": "https://github.com/rolznz/pi-matrix-bridge/raw/master/media/demo.mp4",
     "image": "https://github.com/rolznz/pi-matrix-bridge/raw/master/media/screenshot.png"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && rm -rf matrix-bridge && cp -R dist matrix-bridge",
     "watch": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run build",
@@ -71,5 +71,8 @@
     "fast-check": "^4.5.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
+  },
+  "allowScripts": {
+    "@matrix-org/matrix-sdk-crypto-nodejs@0.4.0": true
   }
 }
