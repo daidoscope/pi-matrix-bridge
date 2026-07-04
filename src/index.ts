@@ -118,8 +118,20 @@ export default function (pi: ExtensionAPI): void {
     saveConfig(config);
   }
   
+  function isTransportConnected(transportType: string): boolean {
+    return transportManager.getTransport(transportType)?.isConnected === true;
+  }
+
   function getOutboundChat(): PendingRemoteChat | null {
-    return pendingRemoteChat ?? fallbackRemoteChat;
+    const chat = pendingRemoteChat ?? fallbackRemoteChat;
+
+    if (!chat) return null;
+
+    if (!isTransportConnected(chat.transport)) {
+      return null;
+    }
+
+    return chat;
   }
 
   /**
@@ -172,8 +184,11 @@ export default function (pi: ExtensionAPI): void {
    */
   async function flushResponse(): Promise<void> {
     const chat = getOutboundChat();
+
     if (!chat || streamEditInFlight) return;
+
     streamEditInFlight = true;
+
     try {
       await pushResponse(chat, true);
       transportManager.sendTyping(chat.chatId, chat.transport).catch(() => {});
@@ -327,27 +342,28 @@ export default function (pi: ExtensionAPI): void {
    */
   pi.on("message_update", async (event, _context) => {
     const chat = getOutboundChat();
+
     if (!chat || streamEditInFlight) return;
 
     const message = event.message as AssistantMessage;
     if (!Array.isArray(message?.content)) return;
 
     streamEditInFlight = true;
+
     try {
       if (turnShowThinking) {
         const thinking = extractThinkingFromMessage(message);
-        if (thinking) await pushStream(chat, thinkingStream, `💭 ${thinking}`);
+        if (thinking) await pushStream(chat, thinkingStream, ` ${thinking}`);
       }
 
       streamedText = extractTextFromMessage(message).trim();
       await pushResponse(chat);
 
-      // Keep the typing indicator alive alongside the streamed messages.
       if (thinkingStream.msgId || responseStream.msgId) {
         transportManager.sendTyping(chat.chatId, chat.transport).catch(() => {});
       }
     } catch (_err) {
-      // Streaming is best-effort — ignore transient send/edit errors.
+      // Streaming is best-effort
     } finally {
       streamEditInFlight = false;
     }
@@ -360,9 +376,11 @@ export default function (pi: ExtensionAPI): void {
   pi.on("tool_execution_start", async (event, _context) => {
     if (!turnShowTools || !getOutboundChat()) return;
 
-    // Record first so it's never lost — turn_end renders from toolEntries even if
-    // the live edit below is skipped (e.g. a render is mid-flight).
-    toolEntries.push({ id: event.toolCallId, text: formatToolCall(event.toolName, event.args) });
+    toolEntries.push({
+      id: event.toolCallId,
+      text: formatToolCall(event.toolName, event.args),
+    });
+
     await flushResponse();
   });
 
@@ -374,8 +392,10 @@ export default function (pi: ExtensionAPI): void {
 
     const entry = toolEntries.find((e) => e.id === event.toolCallId);
     if (!entry) return;
+
     const output = formatToolResult(event.result, event.isError);
     if (output) entry.text += `\n${output}`;
+
     await flushResponse();
   });
 
@@ -384,7 +404,11 @@ export default function (pi: ExtensionAPI): void {
    */
   pi.on("turn_end", async (event, _context) => {
     const chat = getOutboundChat();
-    if (!chat) return;
+
+    if (!chat) {
+      pendingRemoteChat = null;
+      return;
+    }
 
     try {
       const message = event.message as AssistantMessage;
